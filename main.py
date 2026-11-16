@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""The Whale Learned to Fly -- make.fun ai-excited-01 entry.
+"""
+ai-excited-01 — "The Whale Learned to Fly"
 
-A single 1024x1024 picture drawn from scratch with the Python 3 standard
-library only. No image file is loaded and no third-party package is used:
-every pixel is computed in this file and the PNG bytes are encoded here
-with zlib + struct. The drawing is fully deterministic, so two runs
-produce byte-identical output.
+A 1024x1024 sunset scene drawn entirely from scratch with the Python 3
+standard library only (the PNG encoder is handwritten with zlib + struct).
+
+Scene: a giant blue whale breaches diagonally out of a foaming ocean in
+front of a coastal city skyline at sunset, a tiny astronaut in a white
+suit riding on its back, under the words THE WHALE / LEARNED TO FLY /
+HOLD ON, JUDGE.  The letters are drawn with a small 5x7 bitmap font
+designed here from scratch.
+
+Fully deterministic: no randomness, no clock, no external assets.
+Two runs produce byte-identical output.
+
+Run:  python3 main.py        -> writes /output/entry.png
 """
 
 import math
@@ -17,422 +26,510 @@ W = 1024
 H = 1024
 OUT = "/output/entry.png"
 
-# Pixel buffer, row-major RGB.
-buf = bytearray(W * H * 3)
-
-HORIZON = 625  # y where the sea meets the city skyline
+img = bytearray(W * H * 3)
 
 
-def _clamp(v, lo, hi):
-    return lo if v < lo else hi if v > hi else v
+# ------------------------------------------------------------------ pixels
+
+def _i(x, y):
+    return (y * W + x) * 3
 
 
-def put(x, y, rgb):
+def set_px(x, y, c):
     if 0 <= x < W and 0 <= y < H:
-        i = (y * W + x) * 3
-        buf[i] = rgb[0]
-        buf[i + 1] = rgb[1]
-        buf[i + 2] = rgb[2]
+        i = _i(x, y)
+        img[i] = c[0]
+        img[i + 1] = c[1]
+        img[i + 2] = c[2]
 
 
-def hline(x0, x1, y, rgb):
+def blend_px(x, y, c, a):
+    """Blend colour c over the current pixel with opacity a (0..1)."""
+    if 0 <= x < W and 0 <= y < H:
+        i = _i(x, y)
+        img[i] = int(img[i] + (c[0] - img[i]) * a)
+        img[i + 1] = int(img[i + 1] + (c[1] - img[i + 1]) * a)
+        img[i + 2] = int(img[i + 2] + (c[2] - img[i + 2]) * a)
+
+
+def hspan(x0, x1, y, c):
     if y < 0 or y >= H:
         return
-    x0 = _clamp(x0, 0, W - 1)
-    x1 = _clamp(x1, 0, W - 1)
-    if x1 < x0:
+    x0 = max(0, int(x0))
+    x1 = min(W, int(x1))
+    if x1 <= x0:
         return
-    n = x1 - x0 + 1
-    i = (y * W + x0) * 3
-    buf[i:i + n * 3] = bytes(rgb) * n
+    i = _i(x0, y)
+    img[i:i + 3 * (x1 - x0)] = bytes(c) * (x1 - x0)
 
 
-def fill_rect(x, y, w, h, rgb):
-    for yy in range(y, y + h):
-        hline(x, x + w - 1, yy, rgb)
+def blend_span(x0, x1, y, c, a):
+    for x in range(max(0, int(x0)), min(W, int(x1))):
+        blend_px(x, y, c, a)
+
+
+def fill_rect(x0, y0, w, h, c):
+    for y in range(int(y0), int(y0 + h)):
+        hspan(x0, x0 + w, y, c)
+
+
+def fill_circle(cx, cy, r, c):
+    r = int(r)
+    if r <= 0:
+        return
+    for dy in range(-r, r + 1):
+        y = cy + dy
+        if y < 0 or y >= H:
+            continue
+        half = int(math.sqrt(max(0, r * r - dy * dy)))
+        hspan(cx - half, cx + half + 1, y, c)
+
+
+def fill_ellipse(cx, cy, rx, ry, c):
+    rx = int(rx)
+    ry = int(ry)
+    if rx <= 0 or ry <= 0:
+        return
+    for dy in range(-ry, ry + 1):
+        y = cy + dy
+        if y < 0 or y >= H:
+            continue
+        t = dy / ry
+        half = int(rx * math.sqrt(max(0.0, 1.0 - t * t)))
+        hspan(cx - half, cx + half + 1, y, c)
+
+
+def blend_ellipse(cx, cy, rx, ry, c, a):
+    rx = int(rx)
+    ry = int(ry)
+    if rx <= 0 or ry <= 0:
+        return
+    for dy in range(-ry, ry + 1):
+        y = cy + dy
+        if y < 0 or y >= H:
+            continue
+        t = dy / ry
+        half = int(rx * math.sqrt(max(0.0, 1.0 - t * t)))
+        blend_span(cx - half, cx + half + 1, y, c, a)
+
+
+def fill_triangle(a, b, c, col):
+    pts = sorted([(int(p[0]), int(p[1])) for p in (a, b, c)],
+                 key=lambda p: p[1])
+    (x1, y1), (x2, y2), (x3, y3) = pts
+
+    def ex(xa, ya, xb, yb, y):
+        if yb == ya:
+            return float(xa)
+        return xa + (xb - xa) * (y - ya) / (yb - ya)
+
+    for y in range(max(0, y1), min(H, y3 + 1)):
+        xs = []
+        if y1 <= y <= y2:
+            xs.append(ex(x1, y1, x2, y2, y))
+        if y2 <= y <= y3:
+            xs.append(ex(x2, y2, x3, y3, y))
+        if y1 <= y <= y3:
+            xs.append(ex(x1, y1, x3, y3, y))
+        if len(xs) >= 2:
+            hspan(int(min(xs)), int(max(xs)) + 1, y, col)
 
 
 def lerp(a, b, t):
-    return int(a + (b - a) * t + 0.5)
+    return a + (b - a) * t
 
 
-def mix(c1, c2, t):
-    return (lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t),
-            lerp(c1[2], c2[2], t))
+def lerp3(c1, c2, t):
+    return (int(lerp(c1[0], c2[0], t)),
+            int(lerp(c1[1], c2[1], t)),
+            int(lerp(c1[2], c2[2], t)))
 
 
-def disc(cx, cy, r, rgb):
-    """Filled circle."""
-    r2 = r * r
-    for y in range(cy - r, cy + r + 1):
-        dy = y - cy
-        rem = r2 - dy * dy
-        if rem < 0:
-            continue
-        dx = int(math.sqrt(rem))
-        hline(cx - dx, cx + dx, y, rgb)
-
-
-def ring(cx, cy, r0, r1, rgb):
-    """Filled annulus between radii r0 and r1."""
-    for y in range(cy - r1, cy + r1 + 1):
-        dy = y - cy
-        o2 = r1 * r1 - dy * dy
-        if o2 < 0:
-            continue
-        ox = int(math.sqrt(o2))
-        i2 = r0 * r0 - dy * dy
-        if i2 <= 0:
-            hline(cx - ox, cx + ox, y, rgb)
+def gradient(stops, y0, y1):
+    """Fill rows y0..y1 with a vertical gradient through colour stops."""
+    n = y1 - y0
+    for y in range(y0, y1):
+        t = (y - y0) / max(1, n)
+        for k in range(len(stops) - 1):
+            p0, c0 = stops[k]
+            p1, c1 = stops[k + 1]
+            if p0 <= t <= p1:
+                f = 0.0 if p1 == p0 else (t - p0) / (p1 - p0)
+                hspan(0, W, y, lerp3(c0, c1, f))
+                break
         else:
-            ix = int(math.sqrt(i2))
-            hline(cx - ox, cx - ix - 1, y, rgb)
-            hline(cx + ix + 1, cx + ox, y, rgb)
+            hspan(0, W, y, stops[-1][1])
 
 
-def ellipse_rot(cx, cy, a, b, ang_deg, rgb):
-    """Filled ellipse with semi-axes a, b rotated by ang_deg degrees."""
-    th = math.radians(ang_deg)
-    c = math.cos(th)
-    s = math.sin(th)
-    span = int(a + b) + 2
-    for y in range(cy - span, cy + span + 1):
-        dy = y - cy
-        A = (c * c) / (a * a) + (s * s) / (b * b)
-        B = 2 * dy * (c * s / (a * a) - s * c / (b * b))
-        Cc = dy * dy * (s * s / (a * a) + c * c / (b * b)) - 1
-        discr = B * B - 4 * A * Cc
-        if discr < 0:
-            continue
-        sq = math.sqrt(discr)
-        x0 = int((-B - sq) / (2 * A)) + cx
-        x1 = int((-B + sq) / (2 * A)) + cx
-        hline(x0, x1, y, rgb)
+def det(n):
+    """Deterministic pseudo-random value in [0,1) from a number.
+
+    No random module is used anywhere; the same input always gives the
+    same output, so the picture is identical on every run.
+    """
+    v = math.sin(n * 12.9898) * 43758.5453
+    return v - math.floor(v)
 
 
-def polygon(pts, rgb):
-    """Filled polygon given as a list of (x, y) vertices."""
-    ys = [p[1] for p in pts]
-    n = len(pts)
-    for y in range(min(ys), max(ys) + 1):
-        xs = []
-        for i in range(n):
-            x0, y0 = pts[i]
-            x1, y1 = pts[(i + 1) % n]
-            if (y0 <= y < y1) or (y1 <= y < y0):
-                t = (y - y0) / (y1 - y0)
-                xs.append(x0 + t * (x1 - x0))
-        xs.sort()
-        for k in range(0, len(xs) - 1, 2):
-            hline(int(xs[k]), int(xs[k + 1]), y, rgb)
+# ------------------------------------------------------------------ sky
 
+HORIZON = 600
+SUN = (168, 430)
 
-def line(x0, y0, x1, y1, rgb):
-    """Bresenham line."""
-    dx = abs(x1 - x0)
-    sx = 1 if x0 < x1 else -1
-    dy = -abs(y1 - y0)
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    while True:
-        put(x0, y0, rgb)
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x0 += sx
-        if e2 <= dx:
-            err += dx
-            y0 += sy
-
-
-def hash2(i, j):
-    """Small deterministic integer hash, used instead of random."""
-    v = (i * 2654435761 + j * 40503) & 0xFFFFFFFF
-    v ^= v >> 13
-    v = (v * 2246822519) & 0xFFFFFFFF
-    v ^= v >> 16
-    return v
-
-
-# ---------------------------------------------------------------- sky
 
 def draw_sky():
     stops = [
-        (0.00, (26, 18, 66)),
-        (0.45, (110, 52, 128)),
-        (0.75, (216, 84, 72)),
-        (1.00, (255, 132, 52)),
+        (0.00, (24, 12, 58)),    # deep indigo, top
+        (0.35, (72, 30, 96)),    # violet
+        (0.62, (166, 60, 108)),  # magenta rose
+        (0.82, (252, 120, 52)),  # burning orange
+        (1.00, (255, 186, 92)),  # bright gold at the horizon
     ]
-    for y in range(HORIZON):
-        t = y / HORIZON
-        for k in range(len(stops) - 1):
-            t0, c0 = stops[k]
-            t1, c1 = stops[k + 1]
-            if t0 <= t <= t1:
-                f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
-                hline(0, W - 1, y, mix(c0, c1, f))
-                break
-    # Early stars high up, where the sky is darkest.
-    for i in range(90):
-        x = (i * 911 + 37) % W
-        y = (i * 373 + 11) % 250
-        b = 150 + (i % 3) * 40
-        put(x, y, (b, b, min(255, b + 30)))
-        if i % 4 == 0:
-            put(x + 1, y, (b, b, min(255, b + 30)))
+    gradient(stops, 0, HORIZON)
 
 
 def draw_sun():
-    cx, cy = 690, 470
-    disc(cx, cy, 150, (255, 112, 58))
-    disc(cx, cy, 122, (255, 152, 72))
-    disc(cx, cy, 96, (255, 192, 92))
-    disc(cx, cy, 70, (255, 236, 172))
-    disc(cx, cy, 58, (255, 248, 214))
-
-
-def cloud(cx, cy, s, rgb):
-    disc(cx, cy, int(46 * s), rgb)
-    disc(cx - int(52 * s), cy + int(8 * s), int(34 * s), rgb)
-    disc(cx + int(54 * s), cy + int(10 * s), int(36 * s), rgb)
-    disc(cx + int(8 * s), cy - int(16 * s), int(30 * s), rgb)
+    cx, cy = SUN
+    r2 = 200 * 200
+    for dy in range(-200, 201):
+        y = cy + dy
+        if y < 0 or y >= HORIZON:
+            continue
+        half = int(math.sqrt(max(0, r2 - dy * dy)))
+        for dx in range(-half, half + 1):
+            d2 = dx * dx + dy * dy
+            if d2 < r2:
+                a = (1.0 - d2 / r2) ** 2 * 0.5
+                blend_px(cx + dx, y, (255, 166, 66), a)
+    fill_circle(cx, cy, 58, (255, 244, 208))
+    fill_circle(cx, cy, 42, (255, 252, 236))
 
 
 def draw_clouds():
-    cloud(190, 150, 1.0, (255, 150, 118))
-    cloud(430, 105, 0.8, (236, 110, 132))
-    cloud(830, 180, 0.9, (255, 158, 122))
-    cloud(120, 320, 0.7, (214, 96, 128))
-    cloud(880, 330, 0.6, (240, 120, 110))
+    clouds = [
+        (640, 92, 170, 20, (255, 150, 108), 0.45),
+        (880, 160, 150, 18, (255, 170, 118), 0.50),
+        (150, 292, 140, 18, (190, 100, 150), 0.40),
+        (430, 302, 160, 16, (225, 130, 130), 0.40),
+        (760, 252, 130, 16, (240, 140, 110), 0.45),
+    ]
+    for cx, cy, rx, ry, col, a in clouds:
+        blend_ellipse(cx, cy, rx, ry, col, a)
+        blend_ellipse(cx - rx // 2, cy - 4, rx // 2, ry // 2 + 6, col, a * 0.85)
+        blend_ellipse(cx + rx // 2, cy - 2, rx // 2, ry // 2 + 5, col, a * 0.85)
+        blend_ellipse(cx, cy - 8, rx // 3, ry // 2 + 4, col, a * 0.9)
 
 
-# ---------------------------------------------------------------- city
+# ------------------------------------------------------------------ ocean
 
-CITY = (14, 11, 28)
-WIN_LIT = (255, 196, 92)
-WIN_DIM = (150, 110, 60)
+def draw_ocean():
+    stops = [
+        (0.00, (40, 64, 112)),   # dusk blue at the horizon
+        (0.45, (20, 38, 80)),
+        (1.00, (8, 14, 38)),     # almost black at the bottom
+    ]
+    gradient(stops, HORIZON, H)
+    # wave crest lines, broken into dashes and fading with depth
+    for k in range(16):
+        y0 = 636 + k * 24
+        phase = k * 1.7
+        col = lerp3((96, 132, 190), (52, 78, 132), k / 15)
+        for x in range(0, W, 4):
+            if det(x * 0.13 + k * 7.7) < 0.8:
+                y = y0 + int(3.0 * math.sin(x * 0.02 + phase))
+                hspan(x, x + 3, y, col)
+    # warm sun reflection under the sun, broken into shimmering streaks
+    for y in range(HORIZON, H, 4):
+        a = 0.16 * (1.0 - (y - HORIZON) / (H - HORIZON)) + 0.04
+        for s in range(4):
+            cx = 168 + int((det(y * 0.9 + s * 13.7) - 0.5) * 170)
+            wdt = 14 + int(det(y * 1.7 + s * 5.3) * 42)
+            blend_span(cx - wdt, cx + wdt, y, (255, 176, 92), a)
+            blend_span(cx - wdt // 2, cx + wdt // 2, y + 1,
+                       (255, 210, 140), a * 0.8)
 
+
+# ------------------------------------------------------------------ city
 
 def draw_city():
-    x = 0
+    x = 28
     i = 0
-    while x < W:
-        wdt = 46 + hash2(i, 1) % 50
-        hgt = 55 + hash2(i, 2) % 95
-        top = HORIZON - hgt
-        fill_rect(x, top, wdt, hgt, CITY)
-        if hash2(i, 3) % 3 == 0:  # rooftop antenna on some towers
-            fill_rect(x + wdt // 2 - 1, top - 22, 3, 22, CITY)
-            put(x + wdt // 2, top - 24, (255, 90, 70))
-        for wy in range(top + 12, HORIZON - 6, 16):
-            for wx in range(x + 7, x + wdt - 7, 14):
-                r = hash2(wx, wy) % 5
-                if r == 0:
-                    fill_rect(wx, wy, 5, 7, WIN_LIT)
-                elif r == 1:
-                    fill_rect(wx, wy, 5, 7, WIN_DIM)
-        x += wdt + 4
+    while x < 996:
+        w = 34 + int(det(i * 3 + 1) * 46)
+        h = 48 + int(det(i * 7 + 2) * 92)
+        top = 622 - h
+        fill_rect(x, top, w, h, (10, 12, 28))
+        # rooftop antenna on some buildings
+        if det(i * 11 + 5) < 0.4:
+            ax = x + w // 2
+            for yy in range(top - 18, top):
+                set_px(ax, yy, (10, 12, 28))
+            set_px(ax, top - 19, (255, 120, 90))
+        # little lit windows
+        for wy in range(top + 10, 614, 14):
+            for wx in range(x + 6, x + w - 5, 12):
+                d = det(wx * 0.37 + wy * 0.91 + i * 3.1)
+                if d < 0.36:
+                    fill_rect(wx, wy, 5, 7, (255, 196, 92))
+                elif d < 0.48:
+                    fill_rect(wx, wy, 5, 7, (150, 200, 255))
+        x += w + 6
         i += 1
 
 
-# ---------------------------------------------------------------- sea
+# ------------------------------------------------------------------ whale
 
-FOAM = (226, 240, 246)
-FOAM_DIM = (150, 190, 210)
-
-
-def draw_sea():
-    stops = [
-        (0.00, (26, 74, 122)),
-        (0.50, (16, 48, 92)),
-        (1.00, (6, 20, 48)),
-    ]
-    depth = H - HORIZON
-    for y in range(HORIZON, H):
-        t = (y - HORIZON) / depth
-        for k in range(len(stops) - 1):
-            t0, c0 = stops[k]
-            t1, c1 = stops[k + 1]
-            if t0 <= t <= t1:
-                f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
-                hline(0, W - 1, y, mix(c0, c1, f))
-                break
+# Bezier spine: tail (290, 872) -> control (430, 758) -> head (772, 398)
+P0 = (290.0, 872.0)
+P1 = (430.0, 758.0)
+P2 = (772.0, 398.0)
 
 
-def wave(y0, amp, k, ph, rgb, thick):
-    for x in range(W):
-        y = int(y0 + amp * math.sin(x * k + ph))
-        for t in range(thick):
-            put(x, y + t, rgb)
+def spine(t):
+    u = 1.0 - t
+    return (u * u * P0[0] + 2 * u * t * P1[0] + t * t * P2[0],
+            u * u * P0[1] + 2 * u * t * P1[1] + t * t * P2[1])
 
 
-def draw_waves():
-    wave(700, 14, 0.018, 0.4, FOAM_DIM, 3)
-    wave(782, 17, 0.014, 2.1, FOAM, 3)
-    wave(864, 12, 0.021, 4.4, FOAM_DIM, 3)
-    wave(946, 16, 0.012, 1.2, FOAM, 4)
-    wave(660, 8, 0.03, 0.9, FOAM, 2)
+def spine_tan(t):
+    u = 1.0 - t
+    dx = 2 * u * (P1[0] - P0[0]) + 2 * t * (P2[0] - P1[0])
+    dy = 2 * u * (P1[1] - P0[1]) + 2 * t * (P2[1] - P1[1])
+    n = math.hypot(dx, dy)
+    return (dx / n, dy / n)
 
 
-def draw_splash():
-    # Foam rings where the whale bursts out of the water.
-    ring(255, 645, 96, 112, FOAM)
-    ring(255, 645, 122, 130, FOAM_DIM)
-    ring(255, 645, 70, 80, FOAM)
-    drops = [
-        (178, 602, 10), (212, 566, 8), (262, 556, 12), (302, 582, 9),
-        (332, 622, 7), (158, 652, 9), (228, 692, 8), (292, 662, 10),
-        (352, 664, 6), (196, 716, 7), (330, 700, 8), (120, 610, 6),
-        (380, 620, 5), (250, 520, 6), (300, 528, 5),
-    ]
-    for (dx, dy, r) in drops:
-        disc(dx, dy, r, FOAM)
+def spine_normal(t):
+    """Unit normal pointing to the whale's back (upper-left side)."""
+    tx, ty = spine_tan(t)
+    return (ty, -tx)
 
 
-# ---------------------------------------------------------------- whale
-
-WHALE = (64, 108, 168)
-WHALE_DARK = (44, 82, 138)
-BELLY = (150, 192, 226)
-EYE = (10, 20, 40)
+def whale_r(t):
+    """Body radius along the spine: thin tail stock, fat belly, blunt head."""
+    return 30.0 + 92.0 * math.sin(math.pi * (0.12 + 0.72 * t))
 
 
 def draw_whale():
-    # Body: long ellipse tilted so the head rises to the upper right
-    # and the tail stays down in the waves at the lower left.
-    ellipse_rot(505, 445, 320, 108, -36, WHALE)
-    # Paler belly along the underside.
-    ellipse_rot(526, 473, 258, 60, -36, BELLY)
-    # Dorsal fin on the upper edge.
-    polygon([(398, 332), (472, 298), (442, 348)], WHALE_DARK)
-    # Pectoral fin tucked under the body.
-    polygon([(548, 506), (628, 548), (566, 552)], WHALE_DARK)
-    # Tail flukes fanning out from the tail stock.
-    polygon([(250, 630), (138, 544), (186, 656)], WHALE)
-    polygon([(250, 630), (148, 702), (202, 652)], WHALE)
-    # Eye near the head, with a small glint.
-    disc(696, 296, 8, EYE)
-    disc(698, 294, 3, (255, 255, 255))
-    # A gentle smiling mouth line under the head.
-    px, py = None, None
-    for k in range(13):
-        t = k / 12.0
-        mx = int(648 + t * 96)
-        my = int(348 + 16 * math.sin(t * 1.4) - t * 34)
-        if px is not None:
-            line(px, py, mx, my, WHALE_DARK)
-        px, py = mx, my
+    BODY = (46, 98, 168)
+    BACK = (26, 60, 122)
+    BELLY = (122, 172, 216)
+    EDGE = (18, 44, 96)
+
+    # tail flukes, spread wide behind the tail stock
+    fill_triangle((296, 858), (168, 952), (300, 906), EDGE)
+    fill_triangle((296, 858), (300, 906), (424, 962), EDGE)
+    fill_triangle((300, 862), (182, 944), (300, 900), BODY)
+    fill_triangle((300, 862), (300, 900), (410, 954), BODY)
+
+    steps = 120
+    # dark outline pass, then the main body
+    for k in range(steps + 1):
+        t = k / steps
+        cx, cy = spine(t)
+        fill_circle(int(cx), int(cy), int(whale_r(t)) + 4, EDGE)
+    for k in range(steps + 1):
+        t = k / steps
+        cx, cy = spine(t)
+        fill_circle(int(cx), int(cy), int(whale_r(t)), BODY)
+    # darker back stripe
+    for k in range(steps + 1):
+        t = k / steps
+        cx, cy = spine(t)
+        nx, ny = spine_normal(t)
+        r = whale_r(t)
+        fill_circle(int(cx + nx * r * 0.45), int(cy + ny * r * 0.45),
+                    int(r * 0.55), BACK)
+    # lighter belly stripe
+    for k in range(steps + 1):
+        t = k / steps
+        cx, cy = spine(t)
+        nx, ny = spine_normal(t)
+        r = whale_r(t)
+        fill_circle(int(cx - nx * r * 0.42), int(cy - ny * r * 0.42),
+                    int(r * 0.52), BELLY)
+
+    # dorsal fin on the back
+    t = 0.55
+    cx, cy = spine(t)
+    nx, ny = spine_normal(t)
+    tx, ty = spine_tan(t)
+    r = whale_r(t)
+    fill_triangle((cx + nx * r * 0.8 + tx * 26, cy + ny * r * 0.8 + ty * 26),
+                  (cx + nx * r * 0.8 - tx * 26, cy + ny * r * 0.8 - ty * 26),
+                  (cx + nx * (r + 58), cy + ny * (r + 58)), BACK)
+
+    # pectoral fin on the belly side
+    t = 0.68
+    cx, cy = spine(t)
+    nx, ny = spine_normal(t)
+    tx, ty = spine_tan(t)
+    r = whale_r(t)
+    bx, by = cx - nx * r * 0.55, cy - ny * r * 0.55
+    fill_triangle((bx + tx * 22, by + ty * 22),
+                  (bx - tx * 22, by - ty * 22),
+                  (bx - nx * 66 - tx * 30, by - ny * 66 - ty * 30), BACK)
+
+    # eye, near the head on the upper side
+    t = 0.90
+    cx, cy = spine(t)
+    nx, ny = spine_normal(t)
+    tx, ty = spine_tan(t)
+    r = whale_r(t)
+    ex = cx + nx * r * 0.30 + tx * 12
+    ey = cy + ny * r * 0.30 + ty * 12
+    fill_circle(int(ex), int(ey), 8, (8, 14, 28))
+    fill_circle(int(ex) - 2, int(ey) - 2, 3, (255, 255, 255))
+
+    # mouth line along the belly edge near the head
+    for k in range(18):
+        t = 0.87 + 0.12 * k / 17
+        cx, cy = spine(t)
+        nx, ny = spine_normal(t)
+        r = whale_r(t)
+        fill_circle(int(cx - nx * r * 0.66), int(cy - ny * r * 0.66),
+                    2, (16, 38, 84))
 
 
-# ---------------------------------------------------------------- astronaut
+def draw_splash():
+    # droplets scattered around the tail where it leaves the water
+    for i in range(90):
+        a = det(i * 3 + 7) * math.pi * 2
+        d = 30 + det(i * 5 + 11) * 130
+        x = 300 + int(math.cos(a) * d * 1.15)
+        y = 880 + int(math.sin(a) * d * 0.55)
+        fill_circle(x, y, 2 + int(det(i * 7 + 3) * 5), (226, 238, 248))
+    # spray along the body where it breaks the surface
+    for i in range(60):
+        t = 0.08 + det(i * 13 + 2) * 0.30
+        cx, cy = spine(t)
+        nx, ny = spine_normal(t)
+        r = whale_r(t)
+        off = r * (0.9 + det(i * 17 + 4) * 0.5)
+        x = int(cx + nx * off + det(i * 19 + 6) * 30 - 15)
+        y = int(cy + ny * off - det(i * 23 + 8) * 26)
+        fill_circle(x, y, 2 + int(det(i * 29 + 1) * 4), (235, 244, 252))
+    # foam ring on the waterline around the tail
+    for a10 in range(0, 360, 6):
+        a = math.radians(a10)
+        x = 300 + int(math.cos(a) * 150)
+        y = 892 + int(math.sin(a) * 26)
+        fill_circle(x, y, 4, (240, 246, 252))
 
-SUIT = (238, 238, 240)
-VISOR = (30, 44, 66)
 
+# ------------------------------------------------------------------ astronaut
 
 def draw_astronaut():
-    # A tiny astronaut riding on the whale's back, upright.
-    ax, ay = 446, 364
-    line(ax, ay + 26, ax, ay + 34, SUIT)          # tether to the whale
-    disc(ax, ay, 11, SUIT)                        # helmet
-    disc(ax + 2, ay, 7, VISOR)                    # visor
-    fill_rect(ax - 8, ay + 11, 16, 20, SUIT)      # torso
-    fill_rect(ax - 12, ay + 12, 4, 12, SUIT)      # backpack
-    fill_rect(ax - 7, ay + 31, 5, 12, SUIT)       # left leg
-    fill_rect(ax + 2, ay + 31, 5, 12, SUIT)       # right leg
-    fill_rect(ax - 13, ay + 14, 5, 10, SUIT)      # left arm
-    fill_rect(ax + 8, ay + 14, 5, 10, SUIT)       # right arm
-    put(ax - 2, ay + 42, (200, 60, 50))           # boot tip
+    t = 0.45
+    cx, cy = spine(t)
+    nx, ny = spine_normal(t)
+    r = whale_r(t)
+    fx = int(cx + nx * (r + 2))
+    fy = int(cy + ny * (r + 2))
+    WHT = (236, 239, 246)
+    GRY = (168, 174, 186)
+    # soft shadow on the whale's back under the boots
+    fill_ellipse(fx, fy + 2, 19, 6, (20, 48, 98))
+    # legs
+    fill_rect(fx - 9, fy - 16, 7, 16, WHT)
+    fill_rect(fx + 2, fy - 16, 7, 16, WHT)
+    # torso
+    fill_ellipse(fx, fy - 28, 13, 17, WHT)
+    # orange chest stripe
+    fill_rect(fx - 10, fy - 33, 20, 4, (255, 122, 40))
+    # backpack
+    fill_rect(fx + 10, fy - 41, 8, 21, GRY)
+    # arm reaching forward toward the head
+    fill_rect(fx + 7, fy - 38, 14, 6, WHT)
+    # helmet with dark visor
+    fill_circle(fx, fy - 52, 13, WHT)
+    fill_circle(fx + 4, fy - 53, 8, (18, 30, 52))
+    fill_circle(fx + 1, fy - 55, 3, (140, 200, 240))
 
 
-# ---------------------------------------------------------------- text
+# ------------------------------------------------------------------ bitmap font
 
-# 5x7 bitmap glyphs, drawn by hand for the letters this picture needs.
-GLYPHS = {
-    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
-    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
-    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
-    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    ".": ("00000", "00000", "00000", "00000", "00000", "00110", "00110"),
-    ",": ("00000", "00000", "00000", "00000", "00110", "00100", "01000"),
+# 5x7 glyphs, designed from scratch for this entry.  Only the letters
+# the three captions need are defined, plus comma, period and space.
+FONT = {
+    "A": ["..#..", ".#.#.", "#...#", "#...#", "#####", "#...#", "#...#"],
+    "D": ["####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."],
+    "E": ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
+    "F": ["#####", "#....", "#....", "####.", "#....", "#....", "#...."],
+    "G": [".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."],
+    "H": ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+    "J": ["..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."],
+    "L": ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
+    "N": ["#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"],
+    "O": [".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    "R": ["####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"],
+    "T": ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
+    "U": ["#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."],
+    "W": ["#...#", "#...#", "#...#", "#...#", "#...#", "#.#.#", ".#.#."],
+    "Y": ["#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."],
+    ",": [".....", ".....", ".....", ".....", ".....", ".##..", ".#..."],
+    ".": [".....", ".....", ".....", ".....", ".....", ".....", ".##.."],
+    " ": [".....", ".....", ".....", ".....", ".....", ".....", "....."],
 }
 
 
-def draw_text(s, x, y, scale, rgb):
+def draw_glyph(x, y, ch, scale, col):
+    g = FONT.get(ch)
+    if g is None:
+        return
+    for row in range(7):
+        bits = g[row]
+        for ci in range(5):
+            if bits[ci] == "#":
+                fill_rect(x + ci * scale, y + row * scale, scale, scale, col)
+
+
+def draw_text(x, y, s, scale, col):
     cx = x
     for ch in s:
-        g = GLYPHS.get(ch)
-        if g is None:
-            cx += 6 * scale
-            continue
-        for r, row in enumerate(g):
-            for c, bit in enumerate(row):
-                if bit == "1":
-                    fill_rect(cx + c * scale, y + r * scale,
-                              scale, scale, rgb)
+        draw_glyph(cx + scale, y + scale, ch, scale, (16, 8, 36))
+        draw_glyph(cx, y, ch, scale, col)
         cx += 6 * scale
 
 
-def draw_titles():
-    shadow = (24, 12, 44)
-    ink = (255, 244, 214)
-    draw_text("THE WHALE", 74, 68, 7, shadow)
-    draw_text("THE WHALE", 70, 64, 7, ink)
-    draw_text("LEARNED TO FLY", 74, 124, 7, shadow)
-    draw_text("LEARNED TO FLY", 70, 120, 7, ink)
-    draw_text("HOLD ON, JUDGE.", 74, 944, 5, shadow)
-    draw_text("HOLD ON, JUDGE.", 70, 940, 5, ink)
+# ------------------------------------------------------------------ PNG output
 
-
-# ---------------------------------------------------------------- png out
-
-def _chunk(typ, data):
-    out = struct.pack(">I", len(data)) + typ + data
-    out += struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
-    return out
-
-
-def save_png():
+def write_png():
     raw = bytearray()
     for y in range(H):
         raw.append(0)  # filter: none
-        raw += buf[y * W * 3:(y + 1) * W * 3]
+        raw += img[y * W * 3:(y + 1) * W * 3]
+    comp = zlib.compress(bytes(raw), 6)
+
+    def chunk(typ, data):
+        out = struct.pack(">I", len(data)) + typ + data
+        out += struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
+        return out
+
     ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-    data = (b"\x89PNG\r\n\x1a\n"
-            + _chunk(b"IHDR", ihdr)
-            + _chunk(b"IDAT", zlib.compress(bytes(raw), 6))
-            + _chunk(b"IEND", b""))
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", ihdr)
+           + chunk(b"IDAT", comp)
+           + chunk(b"IEND", b""))
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "wb") as f:
-        f.write(data)
-    print("wrote", OUT, len(data), "bytes")
+        f.write(png)
+    print("wrote %s (%d bytes)" % (OUT, len(png)))
 
 
 def main():
     draw_sky()
     draw_sun()
     draw_clouds()
+    draw_ocean()
     draw_city()
-    draw_sea()
-    draw_waves()
-    draw_splash()
     draw_whale()
+    draw_splash()
     draw_astronaut()
-    draw_titles()
-    save_png()
+    draw_text(56, 56, "THE WHALE", 7, (255, 238, 190))
+    draw_text(56, 132, "LEARNED TO FLY", 7, (255, 196, 110))
+    draw_text(600, 928, "HOLD ON, JUDGE.", 4, (255, 255, 255))
+    write_png()
 
 
 if __name__ == "__main__":
